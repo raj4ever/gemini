@@ -17,6 +17,7 @@ services:
       - traefik.http.routers.${COMPOSE_PROJECT_NAME}.entrypoints=websecure
       - traefik.http.routers.${COMPOSE_PROJECT_NAME}.tls.certresolver=letsencrypt
       - traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=8765
+      - traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.responseForwarding.flushInterval=100ms
     volumes:
       - gemini-cache:/app/.gemini_cache
     environment:

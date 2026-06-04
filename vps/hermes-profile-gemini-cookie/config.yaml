@@ -14,7 +14,10 @@ agent:
   tool_use_enforcement: auto
 display:
   interface: cli
-  streaming: false
+  streaming: true
+  platforms:
+    telegram:
+      streaming: true
 gateway:
   strict: false
 streaming:

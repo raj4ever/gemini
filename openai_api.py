@@ -236,11 +236,11 @@ async def chat_completions(
     if body.stream:
 
         async def sse_stream() -> AsyncIterator[str]:
-            # Hermes WebUI waits for the first SSE chunk — emit immediately, then call Gemini.
+            # Hermes WebUI ignores empty content; send a visible placeholder immediately.
             yield _chunk(
                 completion_id,
                 model_name,
-                {"role": "assistant", "content": ""},
+                {"role": "assistant", "content": " "},
             )
             gen = asyncio.create_task(generate_text(prompt, model_enum))
             try:
