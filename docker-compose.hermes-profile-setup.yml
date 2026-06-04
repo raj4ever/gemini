@@ -34,9 +34,11 @@ services:
           fi
         } > "$${DIR}/.env"
         printf '%s\n' "$${PROFILE}" > /data/active_profile
-        chown -R 1000:1000 "$${DIR}" /data/active_profile
         chmod 600 "$${DIR}/.env"
-        echo "OK: profile $${PROFILE} at $${DIR}, active_profile set"
+        rm -f "$${DIR}/gateway.pid" "$${DIR}/processes.json"
+        printf '%s\n' '{"gateway_state":"running","platforms":{}}' > "$${DIR}/gateway_state.json"
+        chown -R 1000:1000 "$${DIR}" /data/active_profile
+        echo "OK: profile $${PROFILE} + gateway_state=running"
 
 volumes:
   hermes-home:

@@ -1,0 +1,35 @@
+# Start gemini-cookie Telegram gateway inside the running Hermes agent container.
+# Requires Docker socket (Hostinger VPS Docker Manager).
+
+services:
+  gateway-start:
+    image: docker:27-cli
+    restart: "no"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - hermes-home:/data:ro
+    environment:
+      PROFILE: gemini-cookie
+      AGENT_NAME_FILTER: hermes-webui-mxnj-hermes-agent
+    command:
+      - sh
+      - -ec
+      - |
+        set -eu
+        AGENT=$$(docker ps -q -f name=$${AGENT_NAME_FILTER} | head -1)
+        if [ -z "$$AGENT" ]; then
+          echo "ERROR: Hermes agent container not found (filter=$${AGENT_NAME_FILTER})"
+          docker ps -a
+          exit 1
+        fi
+        echo "Agent container: $$AGENT"
+        docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway status || true
+        docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway start
+        sleep 3
+        docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway status
+        docker exec "$$AGENT" hermes status || true
+
+volumes:
+  hermes-home:
+    external: true
+    name: hermes-webui-mxnj_hermes-home
