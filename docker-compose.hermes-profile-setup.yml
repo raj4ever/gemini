@@ -1,0 +1,44 @@
+# One-shot: seed gemini-cookie profile into Hermes WebUI volume on VPS.
+# Deploy via Hostinger MCP, then remove this project after success.
+
+services:
+  setup:
+    image: alpine:3.20
+    restart: "no"
+    environment:
+      PROFILE_NAME: gemini-cookie
+      CONFIG_URL: https://raw.githubusercontent.com/raj4ever/gemini/main/vps/hermes-profile-gemini-cookie/config.yaml
+      HERMES_API_KEY: ${HERMES_API_KEY:-sk-gemini-cookie-local}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
+      TELEGRAM_HOME_CHANNEL: ${TELEGRAM_HOME_CHANNEL:-}
+      TELEGRAM_HOME_CHANNEL_THREAD_ID: ${TELEGRAM_HOME_CHANNEL_THREAD_ID:-}
+    volumes:
+      - hermes-home:/data
+    command:
+      - sh
+      - -ec
+      - |
+        set -eu
+        PROFILE="$${PROFILE_NAME}"
+        DIR="/data/profiles/$${PROFILE}"
+        mkdir -p "$${DIR}"
+        wget -qO "$${DIR}/config.yaml" "$${CONFIG_URL}"
+        {
+          echo "HERMES_API_KEY=$${HERMES_API_KEY}"
+          if [ -n "$${TELEGRAM_BOT_TOKEN}" ]; then
+            echo "TELEGRAM_BOT_TOKEN=$${TELEGRAM_BOT_TOKEN}"
+            echo "TELEGRAM_ALLOWED_USERS=$${TELEGRAM_ALLOWED_USERS}"
+            echo "TELEGRAM_HOME_CHANNEL=$${TELEGRAM_HOME_CHANNEL}"
+            echo "TELEGRAM_HOME_CHANNEL_THREAD_ID=$${TELEGRAM_HOME_CHANNEL_THREAD_ID}"
+          fi
+        } > "$${DIR}/.env"
+        printf '%s\n' "$${PROFILE}" > /data/active_profile
+        chown -R 1000:1000 "$${DIR}" /data/active_profile
+        chmod 600 "$${DIR}/.env"
+        echo "OK: profile $${PROFILE} at $${DIR}, active_profile set"
+
+volumes:
+  hermes-home:
+    external: true
+    name: hermes-webui-mxnj_hermes-home

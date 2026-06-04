@@ -1,0 +1,22 @@
+model:
+  default: gemini-3-flash
+  provider: custom
+  base_url: http://gemini-cookie:8765/v1
+  api_key: sk-gemini-cookie-local
+providers: {}
+fallback_providers: []
+toolsets:
+  - hermes-cli
+agent:
+  max_turns: 90
+  gateway_timeout: 1800
+  api_max_retries: 3
+  tool_use_enforcement: auto
+display:
+  interface: cli
+  streaming: false
+gateway:
+  strict: false
+streaming:
+  enabled: false
+_config_version: 26
