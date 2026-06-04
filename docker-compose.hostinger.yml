@@ -34,7 +34,7 @@ services:
       GEMINI_AGENT_MAX_TOOLS: "30"
       GEMINI_AGENT_MAX_MESSAGES: "24"
       GEMINI_MODELS_MINIMAL: "true"
-      GEMINI_STREAM_ACK: "Thinking…\n"
+      GEMINI_STREAM_ACK: ""
     networks:
       - default
       - hermes
