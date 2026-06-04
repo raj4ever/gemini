@@ -1,0 +1,51 @@
+# Gemini Cookie API — VPS / cloud (Hermes WebUI ke saath same Docker network)
+#
+# Pehle GitHub par repo push karo, phir VPS par:
+#
+#   mkdir -p ~/gemini-cookie && cd ~/gemini-cookie
+#   curl -fsSL -o docker-compose.yml \
+#     "https://raw.githubusercontent.com/raj4ever/gemini/main/docker-compose.vps.yml"
+#   # cookies.json yahan rakho (DevTools export)
+#   docker network create hermes-net 2>/dev/null || true
+#   docker compose up -d --build
+#   docker network connect hermes-net hermes-webui   # agar WebUI pehle se chal raha ho
+#
+# Hermes profile (container ke andar):
+#   base_url: http://gemini-cookie:8765/v1
+#   api_key:  sk-gemini-cookie-local  (ya GEMINI_API_KEY)
+
+services:
+  gemini-cookie:
+    container_name: gemini-cookie
+    build:
+      context: https://github.com/${GITHUB_REPO:-raj4ever/gemini}.git
+      dockerfile: Dockerfile
+    image: gemini-cookie:local
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ${GEMINI_DATA_DIR:-./data}/cookies.json:/app/cookies.json:ro
+      - gemini-cache:/app/.gemini_cache
+    environment:
+      GEMINI_HOST: "0.0.0.0"
+      GEMINI_PORT: "8765"
+      GEMINI_COOKIES_PATH: /app/cookies.json
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-cookie-local}
+      GEMINI_DEFAULT_MODEL: ${GEMINI_DEFAULT_MODEL:-gemini-3-flash}
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8765/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+networks:
+  hermes-net:
+    name: ${HERMES_DOCKER_NETWORK:-hermes-net}
+    driver: bridge
+
+volumes:
+  gemini-cache:

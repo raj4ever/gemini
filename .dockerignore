@@ -1,0 +1,9 @@
+.venv
+__pycache__
+.gemini_cache
+.git
+*.pyc
+.env
+.env.local
+README.md
+hermes-gemini-config.example.yaml

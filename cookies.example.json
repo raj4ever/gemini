@@ -1,0 +1,6 @@
+[
+  { "name": "__Secure-1PSID", "value": "YOUR_VALUE_HERE" },
+  { "name": "__Secure-1PSIDTS", "value": "YOUR_VALUE_HERE" },
+  { "name": "__Secure-1PSIDCC", "value": "OPTIONAL" },
+  { "name": "NID", "value": "OPTIONAL" }
+]

@@ -1,0 +1,67 @@
+# Full stack: Hermes WebUI + Gemini Cookie API
+#
+#   docker compose up -d
+#
+# Hermes WebUI:    http://127.0.0.1:8787
+# Gemini Cookie:   http://127.0.0.1:8765
+# Hermes Gateway:  Telegram (polling) — see profiles/gemini-cookie/.env
+
+services:
+  hermes-webui:
+    image: ghcr.io/nesquena/hermes-webui:latest
+    container_name: hermes-webui
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ${HOME}/.hermes:/home/hermeswebui/.hermes
+      - ${HERMES_WORKSPACE:-/Volumes/code/chrome}:/workspace
+    environment:
+      - HERMES_WEBUI_HOST=0.0.0.0
+      - HERMES_WEBUI_PORT=8787
+      - HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui
+      - HERMES_WEBUI_AGENT_DIR=/home/hermeswebui/.hermes/hermes-agent
+      - WANTED_UID=${UID:-501}
+      - WANTED_GID=${GID:-20}
+    networks:
+      - hermes-net
+    restart: unless-stopped
+
+  hermes-gateway:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-gateway
+    command: ["gateway", "run"]
+    volumes:
+      - ${HOME}/.hermes:/opt/data
+      - ${HERMES_WORKSPACE:-/Volumes/code/chrome}:/workspace
+    environment:
+      - HERMES_HOME=/opt/data
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    depends_on:
+      - gemini-cookie
+
+  gemini-cookie:
+    build: .
+    container_name: gemini-cookie
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./cookies.json:/app/cookies.json
+      - gemini-cache:/app/.gemini_cache
+    environment:
+      GEMINI_HOST: "0.0.0.0"
+      GEMINI_PORT: "8765"
+      GEMINI_COOKIES_PATH: /app/cookies.json
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-cookie-local}
+      GEMINI_DEFAULT_MODEL: ${GEMINI_DEFAULT_MODEL:-gemini-3-flash}
+    networks:
+      - hermes-net
+    restart: unless-stopped
+
+networks:
+  hermes-net:
+    driver: bridge
+
+volumes:
+  gemini-cache:

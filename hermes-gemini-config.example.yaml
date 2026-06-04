@@ -1,0 +1,12 @@
+# Paste into ~/.hermes/config.yaml (or set via Hermes WebUI → model → Custom endpoint)
+# Use the Docker URL when Hermes runs inside the hermes-webui container:
+
+model:
+  default: gemini-3-flash
+  provider: custom
+  base_url: http://gemini-cookie:8765/v1
+  api_key: sk-gemini-cookie-local
+
+# From your Mac host (terminal hermes CLI, not in Docker), use instead:
+#   base_url: http://host.docker.internal:8765/v1
+#   OR: http://127.0.0.1:8765/v1

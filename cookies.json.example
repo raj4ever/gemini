@@ -1,0 +1,14 @@
+[
+  {
+    "name": "__Secure-1PSID",
+    "value": "PASTE_FROM_BROWSER_DEVTOOLS",
+    "domain": ".google.com",
+    "path": "/"
+  },
+  {
+    "name": "__Secure-1PSIDTS",
+    "value": "PASTE_FROM_BROWSER_DEVTOOLS",
+    "domain": ".google.com",
+    "path": "/"
+  }
+]
