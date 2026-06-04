@@ -28,8 +28,10 @@ CACHE_DIR = ROOT / ".gemini_cache"
 gemini_client: GeminiClient | None = None
 chat_sessions: dict[str, object] = {}
 _reset_lock = asyncio.Lock()
+_gemini_call_lock = asyncio.Lock()
 _last_reset_at = 0.0
 _RESET_COOLDOWN_SEC = 15.0
+_SEND_TIMEOUT_SEC = 90.0
 
 
 def _is_recoverable_gemini_error(exc: BaseException) -> bool:
@@ -70,21 +72,30 @@ def get_chat(session_id: str):
 
 
 async def send_message_with_retry(session_id: str, text: str):
-    last_exc: Exception | None = None
-    for attempt in range(2):
-        try:
-            chat = get_chat(session_id)
-            return await chat.send_message(text)
-        except Exception as exc:
-            last_exc = exc
-            if attempt == 0 and _is_recoverable_gemini_error(exc):
-                chat_sessions.pop(session_id, None)
-                await reset_gemini_client()
-                continue
-            raise
-    if last_exc:
-        raise last_exc
-    raise HTTPException(status_code=502, detail="Gemini request failed")
+    async with _gemini_call_lock:
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                chat = get_chat(session_id)
+                return await asyncio.wait_for(
+                    chat.send_message(text),
+                    timeout=_SEND_TIMEOUT_SEC,
+                )
+            except TimeoutError as exc:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Gemini reply timed out — try again or refresh cookies",
+                ) from exc
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0 and _is_recoverable_gemini_error(exc):
+                    chat_sessions.pop(session_id, None)
+                    await reset_gemini_client()
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise HTTPException(status_code=502, detail="Gemini request failed")
 
 
 def _cookies_from_raw(raw: object) -> dict[str, str]:
@@ -227,8 +238,12 @@ async def hello() -> dict[str, str]:
             detail="Gemini not ready — cookies.json check karo (see /api/health)",
         )
     try:
-        chat = gemini_client.start_chat()
-        response = await chat.send_message("Say hello in one short friendly sentence.")
+        async with _gemini_call_lock:
+            chat = gemini_client.start_chat()
+            response = await asyncio.wait_for(
+                chat.send_message("Say hello in one short friendly sentence."),
+                timeout=_SEND_TIMEOUT_SEC,
+            )
         text = (response.text or "").strip()
         try:
             persist_cookies(gemini_client)
