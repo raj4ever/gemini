@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
 import shutil
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +27,9 @@ CACHE_DIR = ROOT / ".gemini_cache"
 
 gemini_client: GeminiClient | None = None
 chat_sessions: dict[str, object] = {}
+_reset_lock = asyncio.Lock()
+_last_reset_at = 0.0
+_RESET_COOLDOWN_SEC = 15.0
 
 
 def _is_recoverable_gemini_error(exc: BaseException) -> bool:
@@ -40,15 +45,20 @@ def _is_recoverable_gemini_error(exc: BaseException) -> bool:
 
 async def reset_gemini_client() -> GeminiClient:
     """Re-init after gemini_webapi calls client.close() on API errors."""
-    global gemini_client, chat_sessions
-    chat_sessions.clear()
-    if gemini_client is not None:
-        try:
-            await gemini_client.close()
-        except Exception:
-            pass
-    gemini_client = await init_gemini()
-    return gemini_client
+    global gemini_client, chat_sessions, _last_reset_at
+    async with _reset_lock:
+        now = time.monotonic()
+        if now - _last_reset_at < _RESET_COOLDOWN_SEC and gemini_client is not None:
+            return gemini_client
+        _last_reset_at = now
+        chat_sessions.clear()
+        if gemini_client is not None:
+            try:
+                await gemini_client.close()
+            except Exception:
+                pass
+        gemini_client = await init_gemini()
+        return gemini_client
 
 
 def get_chat(session_id: str):
@@ -191,8 +201,16 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
+    probes_rejected: list[str] = []
+    if gemini_client is not None:
+        try:
+            status = await gemini_client.inspect_account_status()
+            probes_rejected = (status.get("summary") or {}).get("rejected_probes") or []
+        except Exception:
+            pass
     return {
         "ok": gemini_client is not None,
+        "probes_rejected": probes_rejected,
         "cookies_path": str(COOKIES_PATH),
         "openai_base_url": BASE_URL,
         "api_key_hint": f"{API_KEY[:12]}..." if len(API_KEY) > 12 else "(set GEMINI_API_KEY)",

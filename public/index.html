@@ -287,14 +287,7 @@
         botEl.classList.add("typing");
 
         try {
-          try {
-            await sendMessageStream(text, botEl);
-          } catch (streamErr) {
-            if (String(streamErr.message).includes("1097")) {
-              await newSession();
-            }
-            await sendMessagePlain(text, botEl);
-          }
+          await sendMessagePlain(text, botEl);
         } catch (e) {
           botEl.textContent = "Error: " + e.message;
           botEl.classList.add("error");
