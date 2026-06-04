@@ -1,12 +1,6 @@
-# Hostinger VPS — public URL / subdomain (Hermes WebUI jaisa)
-# https://github.com/raj4ever/gemini
-#
-# hPanel → Docker → apni app → Port 8765 publish / domain assign
-# URL pattern (example): https://gemini-cookie-xxxxx.srv1721950.hstgr.cloud/
-#
-#   curl -fsSL -o docker-compose.yml \
-#     https://raw.githubusercontent.com/raj4ever/gemini/main/docker-compose.hostinger.yml
-#   docker compose up -d --build
+# Hostinger VPS + Traefik (Hermes WebUI jaisa auto HTTPS domain)
+# URL: https://${COMPOSE_PROJECT_NAME}.${TRAEFIK_HOST}/
+# Example project "gemini-cookie" → https://gemini-cookie.srv1721950.hstgr.cloud/
 
 services:
   gemini-cookie:
@@ -16,7 +10,13 @@ services:
       dockerfile: Dockerfile
     image: gemini-cookie:local
     ports:
-      - "${GEMINI_PUBLIC_PORT:-8765}:8765"
+      - "8765"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${COMPOSE_PROJECT_NAME}.${TRAEFIK_HOST}`)
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.entrypoints=websecure
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.tls.certresolver=letsencrypt
+      - traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=8765
     volumes:
       - ${GEMINI_DATA_DIR:-./data}/cookies.json:/app/cookies.json:ro
       - gemini-cache:/app/.gemini_cache
@@ -27,7 +27,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-cookie-local}
       GEMINI_DEFAULT_MODEL: ${GEMINI_DEFAULT_MODEL:-gemini-3-flash}
     networks:
-      - hermes-net
+      - default
+      - hermes
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8765/api/health"]
@@ -37,9 +38,9 @@ services:
       start_period: 120s
 
 networks:
-  hermes-net:
-    name: ${HERMES_DOCKER_NETWORK:-hermes-net}
-    driver: bridge
+  hermes:
+    external: true
+    name: hermes-webui-mxnj_default
 
 volumes:
   gemini-cache:
