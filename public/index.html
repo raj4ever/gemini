@@ -225,6 +225,60 @@
         }
       }
 
+      async function sendMessagePlain(text, botEl) {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text, session_id: sessionId }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(err.detail || "Request failed");
+        }
+        const data = await res.json();
+        botEl.textContent = data.text || "(empty reply)";
+      }
+
+      async function sendMessageStream(text, botEl) {
+        const res = await fetch("/api/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text, session_id: sessionId }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(err.detail || "Request failed");
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let full = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = JSON.parse(line.slice(6));
+            if (payload.error) throw new Error(payload.error);
+            if (payload.delta) {
+              full += payload.delta;
+              botEl.textContent = full;
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            if (payload.done) {
+              botEl.textContent = payload.text || full;
+            }
+          }
+        }
+      }
+
       async function sendMessage(text) {
         busy = true;
         sendBtn.disabled = true;
@@ -233,42 +287,13 @@
         botEl.classList.add("typing");
 
         try {
-          const res = await fetch("/api/chat/stream", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text, session_id: sessionId }),
-          });
-
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({ detail: res.statusText }));
-            throw new Error(err.detail || "Request failed");
-          }
-
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let full = "";
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue;
-              const payload = JSON.parse(line.slice(6));
-              if (payload.error) throw new Error(payload.error);
-              if (payload.delta) {
-                full += payload.delta;
-                botEl.textContent = full;
-                messagesEl.scrollTop = messagesEl.scrollHeight;
-              }
-              if (payload.done) {
-                botEl.textContent = payload.text || full;
-              }
+          try {
+            await sendMessageStream(text, botEl);
+          } catch (streamErr) {
+            if (String(streamErr.message).includes("1097")) {
+              await newSession();
             }
+            await sendMessagePlain(text, botEl);
           }
         } catch (e) {
           botEl.textContent = "Error: " + e.message;
@@ -306,7 +331,7 @@
 
       checkHealth();
       setInterval(checkHealth, 15000);
-      addMessage("bot", "Namaste! Gemini se chat kar sakte ho. Pehle server chalao: python server.py");
+      newSession();
     </script>
   </body>
 </html>

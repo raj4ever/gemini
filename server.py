@@ -27,6 +27,56 @@ gemini_client: GeminiClient | None = None
 chat_sessions: dict[str, object] = {}
 
 
+def _is_recoverable_gemini_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        "1097" in msg
+        or "failed to generate" in msg
+        or "usage limit" in msg
+        or "temporarily blocked" in msg
+        or "closed" in msg
+    )
+
+
+async def reset_gemini_client() -> GeminiClient:
+    """Re-init after gemini_webapi calls client.close() on API errors."""
+    global gemini_client, chat_sessions
+    chat_sessions.clear()
+    if gemini_client is not None:
+        try:
+            await gemini_client.close()
+        except Exception:
+            pass
+    gemini_client = await init_gemini()
+    return gemini_client
+
+
+def get_chat(session_id: str):
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="Gemini client not initialized")
+    if session_id not in chat_sessions:
+        chat_sessions[session_id] = gemini_client.start_chat()
+    return chat_sessions[session_id]
+
+
+async def send_message_with_retry(session_id: str, text: str):
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            chat = get_chat(session_id)
+            return await chat.send_message(text)
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0 and _is_recoverable_gemini_error(exc):
+                chat_sessions.pop(session_id, None)
+                await reset_gemini_client()
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    raise HTTPException(status_code=502, detail="Gemini request failed")
+
+
 def _cookies_from_raw(raw: object) -> dict[str, str]:
     if isinstance(raw, list):
         return {item["name"]: item["value"] for item in raw if item.get("name") and item.get("value")}
@@ -182,56 +232,59 @@ async def new_session() -> NewSessionResponse:
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> dict[str, str]:
-    if not gemini_client:
-        raise HTTPException(status_code=503, detail="Gemini client not initialized — check cookies.json")
     text = req.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
 
-    session_id = req.session_id
-    if session_id not in chat_sessions:
-        chat_sessions[session_id] = gemini_client.start_chat()
-    chat = chat_sessions[session_id]
-
     try:
-        response = await chat.send_message(text)
+        response = await send_message_with_retry(req.session_id, text)
         try:
-            persist_cookies(gemini_client)
+            if gemini_client:
+                persist_cookies(gemini_client)
         except OSError:
             pass
-        return {"text": response.text or "", "session_id": session_id}
+        return {"text": response.text or "", "session_id": req.session_id}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest) -> StreamingResponse:
-    if not gemini_client:
-        raise HTTPException(status_code=503, detail="Gemini client not initialized")
-
     text = req.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
 
     session_id = req.session_id
-    if session_id not in chat_sessions:
-        chat_sessions[session_id] = gemini_client.start_chat()
-    chat = chat_sessions[session_id]
 
     async def event_stream():
         full = ""
         try:
+            chat = get_chat(session_id)
             async for chunk in chat.send_message_stream(text):
                 delta = getattr(chunk, "text_delta", None) or ""
                 if delta:
                     full += delta
                     yield f"data: {json.dumps({'delta': delta})}\n\n"
             try:
-                persist_cookies(gemini_client)
+                if gemini_client:
+                    persist_cookies(gemini_client)
             except OSError:
                 pass
             yield f"data: {json.dumps({'done': True, 'text': full})}\n\n"
         except Exception as exc:
+            if _is_recoverable_gemini_error(exc):
+                try:
+                    chat_sessions.pop(session_id, None)
+                    response = await send_message_with_retry(session_id, text)
+                    full = response.text or ""
+                    yield f"data: {json.dumps({'delta': full})}\n\n"
+                    yield f"data: {json.dumps({'done': True, 'text': full})}\n\n"
+                    return
+                except Exception as retry_exc:
+                    yield f"data: {json.dumps({'error': str(retry_exc)})}\n\n"
+                    return
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
     return StreamingResponse(
