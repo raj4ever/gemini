@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import shutil
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,17 +27,45 @@ gemini_client: GeminiClient | None = None
 chat_sessions: dict[str, object] = {}
 
 
+def _cookies_from_raw(raw: object) -> dict[str, str]:
+    if isinstance(raw, list):
+        return {item["name"]: item["value"] for item in raw if item.get("name") and item.get("value")}
+    if isinstance(raw, dict):
+        return raw
+    raise ValueError("cookies must be a list of {name, value} objects or a flat object")
+
+
 def parse_cookies_file() -> dict[str, str]:
     if not COOKIES_PATH.exists():
         raise FileNotFoundError(
             f"{COOKIES_PATH} not found. Copy cookies.example.json to cookies.json and paste your cookies."
         )
-    raw = json.loads(COOKIES_PATH.read_text(encoding="utf-8"))
-    if isinstance(raw, list):
-        return {item["name"]: item["value"] for item in raw if item.get("name") and item.get("value")}
-    if isinstance(raw, dict):
-        return raw
-    raise ValueError("cookies.json must be a list of {name, value} objects or a flat object")
+    if COOKIES_PATH.is_dir():
+        raise FileNotFoundError(
+            f"{COOKIES_PATH} is a directory (bad Docker mount). Remove it or set GEMINI_COOKIES_B64."
+        )
+    return _cookies_from_raw(json.loads(COOKIES_PATH.read_text(encoding="utf-8")))
+
+
+def load_cookies() -> dict[str, str]:
+    """Load cookies from GEMINI_COOKIES_B64 env (VPS deploy) or cookies.json file."""
+    b64 = os.environ.get("GEMINI_COOKIES_B64", "").strip()
+    if b64:
+        raw = json.loads(base64.b64decode(b64))
+        cookies = _cookies_from_raw(raw)
+        try:
+            if COOKIES_PATH.is_dir():
+                shutil.rmtree(COOKIES_PATH)
+            if not COOKIES_PATH.exists():
+                COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+                payload = raw if isinstance(raw, list) else [
+                    {"name": k, "value": v} for k, v in cookies.items()
+                ]
+                COOKIES_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        return cookies
+    return parse_cookies_file()
 
 
 def persist_cookies(client: GeminiClient) -> None:
@@ -55,7 +85,7 @@ def persist_cookies(client: GeminiClient) -> None:
 
 
 async def init_gemini() -> GeminiClient:
-    cookies = parse_cookies_file()
+    cookies = load_cookies()
     psid = cookies.get("__Secure-1PSID", "")
     psidts = cookies.get("__Secure-1PSIDTS", "")
     if not psid:

@@ -18,12 +18,12 @@ services:
       - traefik.http.routers.${COMPOSE_PROJECT_NAME}.tls.certresolver=letsencrypt
       - traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=8765
     volumes:
-      - ${GEMINI_DATA_DIR:-./data}/cookies.json:/app/cookies.json:ro
       - gemini-cache:/app/.gemini_cache
     environment:
       GEMINI_HOST: "0.0.0.0"
       GEMINI_PORT: "8765"
       GEMINI_COOKIES_PATH: /app/cookies.json
+      GEMINI_COOKIES_B64: ${GEMINI_COOKIES_B64:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-cookie-local}
       GEMINI_DEFAULT_MODEL: ${GEMINI_DEFAULT_MODEL:-gemini-3-flash}
     networks:
