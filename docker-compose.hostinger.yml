@@ -1,0 +1,45 @@
+# Hostinger VPS — public URL / subdomain (Hermes WebUI jaisa)
+# https://github.com/raj4ever/gemini
+#
+# hPanel → Docker → apni app → Port 8765 publish / domain assign
+# URL pattern (example): https://gemini-cookie-xxxxx.srv1721950.hstgr.cloud/
+#
+#   curl -fsSL -o docker-compose.yml \
+#     https://raw.githubusercontent.com/raj4ever/gemini/main/docker-compose.hostinger.yml
+#   docker compose up -d --build
+
+services:
+  gemini-cookie:
+    container_name: gemini-cookie
+    build:
+      context: https://github.com/${GITHUB_REPO:-raj4ever/gemini}.git
+      dockerfile: Dockerfile
+    image: gemini-cookie:local
+    ports:
+      - "${GEMINI_PUBLIC_PORT:-8765}:8765"
+    volumes:
+      - ${GEMINI_DATA_DIR:-./data}/cookies.json:/app/cookies.json:ro
+      - gemini-cache:/app/.gemini_cache
+    environment:
+      GEMINI_HOST: "0.0.0.0"
+      GEMINI_PORT: "8765"
+      GEMINI_COOKIES_PATH: /app/cookies.json
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-cookie-local}
+      GEMINI_DEFAULT_MODEL: ${GEMINI_DEFAULT_MODEL:-gemini-3-flash}
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8765/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+networks:
+  hermes-net:
+    name: ${HERMES_DOCKER_NETWORK:-hermes-net}
+    driver: bridge
+
+volumes:
+  gemini-cache:

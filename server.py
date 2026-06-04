@@ -120,6 +120,27 @@ async def health() -> dict[str, object]:
     }
 
 
+@app.get("/api/hello")
+async def hello() -> dict[str, str]:
+    """Quick cloud check — browser ya curl se 'hello' verify karo."""
+    if not gemini_client:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini not ready — cookies.json check karo (see /api/health)",
+        )
+    try:
+        chat = gemini_client.start_chat()
+        response = await chat.send_message("Say hello in one short friendly sentence.")
+        text = (response.text or "").strip()
+        try:
+            persist_cookies(gemini_client)
+        except OSError:
+            pass
+        return {"status": "ok", "message": text or "hello"}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/api/session/new", response_model=NewSessionResponse)
 async def new_session() -> NewSessionResponse:
     if not gemini_client:

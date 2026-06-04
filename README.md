@@ -80,6 +80,51 @@ docker network connect hermes-net hermes-webui
 
 Agar WebUI ka network alag hai: `docker network connect hermes-net <webui-container-name>`
 
+### Hostinger — public domain (Hermes jaisa)
+
+Hermes WebUI example: [hermes-webui-mxnj.srv1721950.hstgr.cloud](https://hermes-webui-mxnj.srv1721950.hstgr.cloud/)
+
+Gemini ke liye **public port** wala compose use karo:
+
+```text
+https://raw.githubusercontent.com/raj4ever/gemini/main/docker-compose.hostinger.yml
+```
+
+VPS par:
+
+```bash
+mkdir -p ~/gemini-cookie/data && cd ~/gemini-cookie
+curl -fsSL -o docker-compose.yml \
+  https://raw.githubusercontent.com/raj4ever/gemini/main/docker-compose.hostinger.yml
+# data/cookies.json rakho
+docker network create hermes-net 2>/dev/null || true
+docker compose up -d --build
+docker network connect hermes-net hermes-webui
+```
+
+**hPanel → VPS → Docker / Applications:** nayi service ya existing stack mein **port 8765** expose karo aur **domain / subdomain** assign karo (Hermes WebUI jaisa flow). URL kuch is pattern ka milega:
+
+`https://gemini-cookie-XXXX.srv1721950.hstgr.cloud/`
+
+(Exact prefix Hostinger panel mein dikhega — `mxnj` wala part har app alag hota hai.)
+
+**Cloud par test (browser):**
+
+| URL | Kya dikhega |
+|-----|-------------|
+| `/` | Chat UI — yahan "Hello" type karke bhejo |
+| `/api/health` | JSON — `"ok": true` hona chahiye |
+| `/api/hello` | Gemini se ek short hello reply (cookies theek hon to) |
+
+```bash
+curl -sS https://YOUR-GEMINI-DOMAIN/api/health
+curl -sS https://YOUR-GEMINI-DOMAIN/api/hello
+```
+
+**Hermes WebUI (same VPS, Docker network):** public domain mat use karo — andar se:
+
+`http://gemini-cookie:8765/v1`
+
 ### Cookies VPS par
 
 ```bash
