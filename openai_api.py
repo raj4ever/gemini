@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -174,6 +175,70 @@ def _build_prompt(body: ChatCompletionRequest) -> str:
     return messages_to_prompt(raw_messages)
 
 
+async def _generate_content_text(prompt: str, model_enum: Any) -> str:
+    """Non-stream Gemini call with lock, timeout, and 1097-style error recovery."""
+    from server import (
+        _SEND_TIMEOUT_SEC,
+        _gemini_call_lock,
+        _is_recoverable_gemini_error,
+        gemini_client,
+        persist_cookies,
+        reset_gemini_client,
+    )
+
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="Gemini client not initialized")
+
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        client = gemini_client
+        if not client:
+            raise HTTPException(status_code=503, detail="Gemini client not initialized")
+        try:
+            async with _gemini_call_lock:
+                response = await asyncio.wait_for(
+                    client.generate_content(prompt, model=model_enum),
+                    timeout=_SEND_TIMEOUT_SEC,
+                )
+            try:
+                persist_cookies(client)
+            except OSError:
+                pass
+            return response.text or ""
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0 and _is_recoverable_gemini_error(exc):
+                await reset_gemini_client()
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    return ""
+
+
+def _finish_agent_stream(
+    completion_id: str,
+    model_name: str,
+    full: str,
+) -> list[str]:
+    lines: list[str] = []
+    cleaned, tool_calls = parse_tool_calls(full)
+    if cleaned:
+        lines.append(
+            _chunk(
+                completion_id,
+                model_name,
+                {"role": "assistant", "content": cleaned},
+            )
+        )
+    if tool_calls:
+        lines.extend(build_stream_tool_chunks(completion_id, model_name, tool_calls))
+    else:
+        lines.append(_chunk(completion_id, model_name, {}, finish_reason="stop"))
+        lines.append("data: [DONE]\n\n")
+    return lines
+
+
 @router.get("/models")
 async def list_models(_: None = Depends(verify_api_key)) -> dict[str, Any]:
     models = []
@@ -213,49 +278,63 @@ async def chat_completions(
     agent_mode = bool(body.tools)
 
     if body.stream:
+        from server import _gemini_call_lock, _is_recoverable_gemini_error, reset_gemini_client
 
         async def sse_stream() -> AsyncIterator[str]:
             full = ""
             try:
-                async for chunk in gemini_client.generate_content_stream(
-                    prompt, model=model_enum
-                ):
-                    delta = getattr(chunk, "text_delta", None) or ""
-                    if delta:
-                        full += delta
-                        if not agent_mode:
-                            yield _chunk(
-                                completion_id,
-                                model_name,
-                                {"role": "assistant", "content": delta},
-                            )
+                async with _gemini_call_lock:
+                    async for chunk in gemini_client.generate_content_stream(
+                        prompt, model=model_enum
+                    ):
+                        delta = getattr(chunk, "text_delta", None) or ""
+                        if delta:
+                            full += delta
+                            if not agent_mode:
+                                yield _chunk(
+                                    completion_id,
+                                    model_name,
+                                    {"role": "assistant", "content": delta},
+                                )
                 try:
                     persist_cookies(gemini_client)
                 except OSError:
                     pass
 
                 if agent_mode:
-                    cleaned, tool_calls = parse_tool_calls(full)
-                    if cleaned:
-                        yield _chunk(
-                            completion_id,
-                            model_name,
-                            {"role": "assistant", "content": cleaned},
-                        )
-                    if tool_calls:
-                        for line in build_stream_tool_chunks(
-                            completion_id, model_name, tool_calls
-                        ):
-                            yield line
-                    else:
-                        yield _chunk(completion_id, model_name, {}, finish_reason="stop")
-                        yield "data: [DONE]\n\n"
+                    for line in _finish_agent_stream(completion_id, model_name, full):
+                        yield line
                 else:
                     yield _chunk(completion_id, model_name, {}, finish_reason="stop")
                     yield "data: [DONE]\n\n"
             except Exception as exc:
+                if _is_recoverable_gemini_error(exc):
+                    try:
+                        await reset_gemini_client()
+                        full = await _generate_content_text(prompt, model_enum)
+                        if agent_mode:
+                            for line in _finish_agent_stream(
+                                completion_id, model_name, full
+                            ):
+                                yield line
+                        else:
+                            if full:
+                                yield _chunk(
+                                    completion_id,
+                                    model_name,
+                                    {"role": "assistant", "content": full},
+                                )
+                            yield _chunk(
+                                completion_id, model_name, {}, finish_reason="stop"
+                            )
+                            yield "data: [DONE]\n\n"
+                        return
+                    except Exception as fallback_exc:
+                        exc = fallback_exc
                 yield _chunk(
-                    completion_id, model_name, {"content": f"\n[Error: {exc}]"}
+                    completion_id,
+                    model_name,
+                    {"role": "assistant", "content": f"\n[Error: {exc}]"},
                 )
                 yield _chunk(completion_id, model_name, {}, finish_reason="stop")
                 yield "data: [DONE]\n\n"
@@ -267,12 +346,9 @@ async def chat_completions(
         )
 
     try:
-        response = await gemini_client.generate_content(prompt, model=model_enum)
-        try:
-            persist_cookies(gemini_client)
-        except OSError:
-            pass
-        text = response.text or ""
+        text = await _generate_content_text(prompt, model_enum)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

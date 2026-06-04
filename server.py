@@ -314,8 +314,19 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
             if _is_recoverable_gemini_error(exc):
                 try:
                     chat_sessions.pop(session_id, None)
-                    response = await send_message_with_retry(session_id, text)
+                    await reset_gemini_client()
+                    async with _gemini_call_lock:
+                        chat = get_chat(session_id)
+                        response = await asyncio.wait_for(
+                            chat.send_message(text),
+                            timeout=_SEND_TIMEOUT_SEC,
+                        )
                     full = response.text or ""
+                    if gemini_client:
+                        try:
+                            persist_cookies(gemini_client)
+                        except OSError:
+                            pass
                     yield f"data: {json.dumps({'delta': full})}\n\n"
                     yield f"data: {json.dumps({'done': True, 'text': full})}\n\n"
                     return
