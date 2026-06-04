@@ -212,16 +212,8 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
-    probes_rejected: list[str] = []
-    if gemini_client is not None:
-        try:
-            status = await gemini_client.inspect_account_status()
-            probes_rejected = (status.get("summary") or {}).get("rejected_probes") or []
-        except Exception:
-            pass
     return {
         "ok": gemini_client is not None,
-        "probes_rejected": probes_rejected,
         "cookies_path": str(COOKIES_PATH),
         "openai_base_url": BASE_URL,
         "api_key_hint": f"{API_KEY[:12]}..." if len(API_KEY) > 12 else "(set GEMINI_API_KEY)",
