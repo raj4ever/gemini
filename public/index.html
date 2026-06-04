@@ -173,7 +173,7 @@
         ></textarea>
         <button type="submit" id="send">Bhejo</button>
       </form>
-      <p class="hint">Server: <code>http://127.0.0.1:8765</code> — cookies <code>cookies.json</code> se</p>
+      <p class="hint">API: <code id="apiBase"></code> — cookies <code>cookies.json</code> se</p>
     </div>
 
     <script>
@@ -225,12 +225,18 @@
         }
       }
 
+      const CHAT_TIMEOUT_MS = 100000;
+
       async function sendMessagePlain(text, botEl) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), CHAT_TIMEOUT_MS);
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: text, session_id: sessionId }),
+          signal: ctrl.signal,
         });
+        clearTimeout(timer);
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || "Request failed");
@@ -289,7 +295,11 @@
         try {
           await sendMessagePlain(text, botEl);
         } catch (e) {
-          botEl.textContent = "Error: " + e.message;
+          const msg =
+            e.name === "AbortError"
+              ? "Timeout — dubara try karo ya Nayi chat"
+              : e.message;
+          botEl.textContent = "Error: " + msg;
           botEl.classList.add("error");
         } finally {
           botEl.classList.remove("typing");
@@ -321,6 +331,8 @@
       });
 
       newChatBtn.addEventListener("click", newSession);
+
+      document.getElementById("apiBase").textContent = location.origin;
 
       checkHealth();
       setInterval(checkHealth, 15000);

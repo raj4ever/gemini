@@ -17,7 +17,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from gemini_service import SEND_TIMEOUT_SEC, fake_stream_text, generate_text, send_chat_message
+from gemini_service import (
+    SEND_TIMEOUT_SEC,
+    clear_chat_history,
+    fake_stream_text,
+    generate_text,
+    send_chat_message,
+)
 from gemini_webapi import GeminiClient
 from openai_api import API_KEY, BASE_URL, DEFAULT_MODEL, PORT, router as openai_router
 
@@ -48,6 +54,9 @@ async def reset_gemini_client() -> GeminiClient:
             return gemini_client
         _last_reset_at = now
         chat_sessions.clear()
+        from gemini_service import _chat_histories
+
+        _chat_histories.clear()
         if gemini_client is not None:
             try:
                 await gemini_client.close()
@@ -216,7 +225,7 @@ async def new_session() -> NewSessionResponse:
     if not gemini_client:
         raise HTTPException(status_code=503, detail="Gemini client not initialized")
     session_id = str(uuid.uuid4())
-    chat_sessions[session_id] = gemini_client.start_chat()
+    clear_chat_history(session_id)
     return NewSessionResponse(session_id=session_id)
 
 

@@ -20,8 +20,11 @@ SEND_TIMEOUT_SEC = float(os.environ.get("GEMINI_SEND_TIMEOUT", "120"))
 MAX_ATTEMPTS = int(os.environ.get("GEMINI_MAX_ATTEMPTS", "3"))
 RETRY_DELAY_SEC = float(os.environ.get("GEMINI_RETRY_DELAY", "2"))
 FAKE_STREAM_CHUNK = int(os.environ.get("GEMINI_FAKE_STREAM_CHUNK", "48"))
+CHAT_HISTORY_MAX_TURNS = int(os.environ.get("GEMINI_CHAT_HISTORY_TURNS", "12"))
 
 _call_lock = asyncio.Lock()
+# Web UI: ChatSession 2nd message often hangs on VPS — use prompt history + generate_content instead.
+_chat_histories: dict[str, list[tuple[str, str]]] = {}
 
 
 def is_recoverable_error(exc: BaseException) -> bool:
@@ -88,49 +91,33 @@ async def generate_text(prompt: str, model: Model | Any = Model.UNSPECIFIED) -> 
     raise HTTPException(status_code=502, detail="Gemini request failed")
 
 
+def clear_chat_history(session_id: str) -> None:
+    _chat_histories.pop(session_id, None)
+
+
+def _history_to_prompt(history: list[tuple[str, str]]) -> str:
+    lines: list[str] = []
+    for role, content in history:
+        label = "User" if role == "user" else "Assistant"
+        lines.append(f"[{label}]\n{content}")
+    lines.append("[Assistant]")
+    return "\n\n".join(lines)
+
+
 async def send_chat_message(session_id: str, text: str) -> str:
-    """Web UI /api/chat — chat.send_message (non-stream) with retries."""
-    from server import chat_sessions, gemini_client, get_chat, persist_cookies, reset_gemini_client
+    """Web UI /api/chat — history + generate_content (stable on VPS for multi-turn)."""
+    history = _chat_histories.setdefault(session_id, [])
+    history.append(("user", text))
+    if len(history) > CHAT_HISTORY_MAX_TURNS * 2:
+        history[:] = history[-(CHAT_HISTORY_MAX_TURNS * 2) :]
 
-    last_exc: Exception | None = None
-    for attempt in range(MAX_ATTEMPTS):
-        if gemini_client is None:
-            raise HTTPException(status_code=503, detail="Gemini client not initialized")
-        try:
-            async with _call_lock:
-                chat = get_chat(session_id)
-                if USE_NATIVE_STREAM:
-                    parts: list[str] = []
-                    async for chunk in chat.send_message_stream(text):
-                        delta = getattr(chunk, "text_delta", None) or ""
-                        if delta:
-                            parts.append(delta)
-                    reply = "".join(parts)
-                else:
-                    response = await asyncio.wait_for(
-                        chat.send_message(text),
-                        timeout=SEND_TIMEOUT_SEC,
-                    )
-                    reply = response.text or ""
-            try:
-                persist_cookies(gemini_client)
-            except OSError:
-                pass
-            return reply
-        except TimeoutError as exc:
-            raise HTTPException(
-                status_code=504,
-                detail="Gemini reply timed out — try again",
-            ) from exc
-        except Exception as exc:
-            last_exc = exc
-            chat_sessions.pop(session_id, None)
-            if attempt < MAX_ATTEMPTS - 1 and is_recoverable_error(exc):
-                await asyncio.sleep(RETRY_DELAY_SEC)
-                await reset_gemini_client()
-                continue
-            break
+    prompt = _history_to_prompt(history)
+    try:
+        reply = await generate_text(prompt)
+    except Exception:
+        if history and history[-1][0] == "user" and history[-1][1] == text:
+            history.pop()
+        raise
 
-    if last_exc:
-        raise last_exc
-    raise HTTPException(status_code=502, detail="Gemini request failed")
+    history.append(("assistant", reply))
+    return reply
