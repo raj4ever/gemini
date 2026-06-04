@@ -260,18 +260,30 @@ async def chat(req: ChatRequest) -> dict[str, str]:
     text = req.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="Gemini client not initialized")
 
     try:
-        response = await send_message_with_retry(req.session_id, text)
+        async with _gemini_call_lock:
+            chat_obj = get_chat(req.session_id)
+            response = await asyncio.wait_for(
+                chat_obj.send_message(text),
+                timeout=_SEND_TIMEOUT_SEC,
+            )
         try:
-            if gemini_client:
-                persist_cookies(gemini_client)
+            persist_cookies(gemini_client)
         except OSError:
             pass
         return {"text": response.text or "", "session_id": req.session_id}
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="Gemini reply timed out — try again",
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:
+        chat_sessions.pop(req.session_id, None)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
