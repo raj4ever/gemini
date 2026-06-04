@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from gemini_service import SEND_TIMEOUT_SEC, fake_stream_text, generate_text, send_chat_message
 from gemini_webapi import GeminiClient
 from openai_api import API_KEY, BASE_URL, DEFAULT_MODEL, PORT, router as openai_router
 
@@ -28,21 +29,14 @@ CACHE_DIR = ROOT / ".gemini_cache"
 gemini_client: GeminiClient | None = None
 chat_sessions: dict[str, object] = {}
 _reset_lock = asyncio.Lock()
-_gemini_call_lock = asyncio.Lock()
 _last_reset_at = 0.0
-_RESET_COOLDOWN_SEC = 15.0
-_SEND_TIMEOUT_SEC = 90.0
+_RESET_COOLDOWN_SEC = 10.0
 
 
 def _is_recoverable_gemini_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return (
-        "1097" in msg
-        or "failed to generate" in msg
-        or "usage limit" in msg
-        or "temporarily blocked" in msg
-        or "closed" in msg
-    )
+    from gemini_service import is_recoverable_error
+
+    return is_recoverable_error(exc)
 
 
 async def reset_gemini_client() -> GeminiClient:
@@ -69,33 +63,6 @@ def get_chat(session_id: str):
     if session_id not in chat_sessions:
         chat_sessions[session_id] = gemini_client.start_chat()
     return chat_sessions[session_id]
-
-
-async def send_message_with_retry(session_id: str, text: str):
-    async with _gemini_call_lock:
-        last_exc: Exception | None = None
-        for attempt in range(2):
-            try:
-                chat = get_chat(session_id)
-                return await asyncio.wait_for(
-                    chat.send_message(text),
-                    timeout=_SEND_TIMEOUT_SEC,
-                )
-            except TimeoutError as exc:
-                raise HTTPException(
-                    status_code=504,
-                    detail="Gemini reply timed out — try again or refresh cookies",
-                ) from exc
-            except Exception as exc:
-                last_exc = exc
-                if attempt == 0 and _is_recoverable_gemini_error(exc):
-                    chat_sessions.pop(session_id, None)
-                    await reset_gemini_client()
-                    continue
-                raise
-        if last_exc:
-            raise last_exc
-        raise HTTPException(status_code=502, detail="Gemini request failed")
 
 
 def _cookies_from_raw(raw: object) -> dict[str, str]:
@@ -149,10 +116,13 @@ def persist_cookies(client: GeminiClient) -> None:
     else:
         for cookie in jar:
             items.append((cookie.name, cookie.value))
-    COOKIES_PATH.write_text(
-        json.dumps([{"name": k, "value": v} for k, v in items], indent=2),
-        encoding="utf-8",
-    )
+    try:
+        COOKIES_PATH.write_text(
+            json.dumps([{"name": k, "value": v} for k, v in items], indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 async def init_gemini() -> GeminiClient:
@@ -167,7 +137,7 @@ async def init_gemini() -> GeminiClient:
 
     client = GeminiClient(psid, psidts or None)
     client.cookies = cookies
-    await client.init(timeout=120, auto_close=False, auto_refresh=True)
+    await client.init(timeout=int(SEND_TIMEOUT_SEC), auto_close=False, auto_refresh=True)
     return client
 
 
@@ -177,6 +147,7 @@ async def lifespan(_app: FastAPI):
     try:
         gemini_client = await init_gemini()
         print("Gemini client ready.")
+        print(f"Native Google stream: {os.environ.get('GEMINI_NATIVE_STREAM', 'false')}")
     except Exception as exc:
         gemini_client = None
         print(f"Gemini init failed: {exc}")
@@ -212,8 +183,11 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
+    from gemini_service import USE_NATIVE_STREAM
+
     return {
         "ok": gemini_client is not None,
+        "native_stream": USE_NATIVE_STREAM,
         "cookies_path": str(COOKIES_PATH),
         "openai_base_url": BASE_URL,
         "api_key_hint": f"{API_KEY[:12]}..." if len(API_KEY) > 12 else "(set GEMINI_API_KEY)",
@@ -223,25 +197,16 @@ async def health() -> dict[str, object]:
 
 @app.get("/api/hello")
 async def hello() -> dict[str, str]:
-    """Quick cloud check — browser ya curl se 'hello' verify karo."""
     if not gemini_client:
         raise HTTPException(
             status_code=503,
             detail="Gemini not ready — cookies.json check karo (see /api/health)",
         )
     try:
-        async with _gemini_call_lock:
-            chat = gemini_client.start_chat()
-            response = await asyncio.wait_for(
-                chat.send_message("Say hello in one short friendly sentence."),
-                timeout=_SEND_TIMEOUT_SEC,
-            )
-        text = (response.text or "").strip()
-        try:
-            persist_cookies(gemini_client)
-        except OSError:
-            pass
-        return {"status": "ok", "message": text or "hello"}
+        text = await generate_text("Say hello in one short friendly sentence.")
+        return {"status": "ok", "message": (text or "").strip() or "hello"}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -260,79 +225,30 @@ async def chat(req: ChatRequest) -> dict[str, str]:
     text = req.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
-    if not gemini_client:
-        raise HTTPException(status_code=503, detail="Gemini client not initialized")
-
     try:
-        async with _gemini_call_lock:
-            chat_obj = get_chat(req.session_id)
-            response = await asyncio.wait_for(
-                chat_obj.send_message(text),
-                timeout=_SEND_TIMEOUT_SEC,
-            )
-        try:
-            persist_cookies(gemini_client)
-        except OSError:
-            pass
-        return {"text": response.text or "", "session_id": req.session_id}
-    except TimeoutError as exc:
-        raise HTTPException(
-            status_code=504,
-            detail="Gemini reply timed out — try again",
-        ) from exc
+        reply = await send_chat_message(req.session_id, text)
+        return {"text": reply, "session_id": req.session_id}
     except HTTPException:
         raise
     except Exception as exc:
-        chat_sessions.pop(req.session_id, None)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """SSE for UI — uses same non-stream Gemini call, chunks text for display."""
     text = req.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
-
     session_id = req.session_id
 
     async def event_stream():
-        full = ""
         try:
-            chat = get_chat(session_id)
-            async for chunk in chat.send_message_stream(text):
-                delta = getattr(chunk, "text_delta", None) or ""
-                if delta:
-                    full += delta
-                    yield f"data: {json.dumps({'delta': delta})}\n\n"
-            try:
-                if gemini_client:
-                    persist_cookies(gemini_client)
-            except OSError:
-                pass
+            full = await send_chat_message(session_id, text)
+            for piece in fake_stream_text(full):
+                yield f"data: {json.dumps({'delta': piece})}\n\n"
             yield f"data: {json.dumps({'done': True, 'text': full})}\n\n"
         except Exception as exc:
-            if _is_recoverable_gemini_error(exc):
-                try:
-                    chat_sessions.pop(session_id, None)
-                    await reset_gemini_client()
-                    async with _gemini_call_lock:
-                        chat = get_chat(session_id)
-                        response = await asyncio.wait_for(
-                            chat.send_message(text),
-                            timeout=_SEND_TIMEOUT_SEC,
-                        )
-                    full = response.text or ""
-                    if gemini_client:
-                        try:
-                            persist_cookies(gemini_client)
-                        except OSError:
-                            pass
-                    yield f"data: {json.dumps({'delta': full})}\n\n"
-                    yield f"data: {json.dumps({'done': True, 'text': full})}\n\n"
-                    return
-                except Exception as retry_exc:
-                    yield f"data: {json.dumps({'error': str(retry_exc)})}\n\n"
-                    return
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
     return StreamingResponse(

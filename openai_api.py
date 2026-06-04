@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time
@@ -20,6 +19,7 @@ from agent_bridge import (
     messages_to_agent_prompt,
     parse_tool_calls,
 )
+from gemini_service import fake_stream_text, generate_text
 from gemini_webapi.constants import Model
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "sk-gemini-cookie-local")
@@ -103,7 +103,6 @@ def extract_message_text(content: str | list[Any] | None) -> str:
 
 
 def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
-    """Simple chat prompt (no tools)."""
     lines: list[str] = []
     for msg in messages:
         role = msg.get("role", "user")
@@ -175,52 +174,7 @@ def _build_prompt(body: ChatCompletionRequest) -> str:
     return messages_to_prompt(raw_messages)
 
 
-async def _generate_content_text(prompt: str, model_enum: Any) -> str:
-    """Non-stream Gemini call with lock, timeout, and 1097-style error recovery."""
-    from server import (
-        _SEND_TIMEOUT_SEC,
-        _gemini_call_lock,
-        _is_recoverable_gemini_error,
-        gemini_client,
-        persist_cookies,
-        reset_gemini_client,
-    )
-
-    if not gemini_client:
-        raise HTTPException(status_code=503, detail="Gemini client not initialized")
-
-    last_exc: Exception | None = None
-    for attempt in range(2):
-        client = gemini_client
-        if not client:
-            raise HTTPException(status_code=503, detail="Gemini client not initialized")
-        try:
-            async with _gemini_call_lock:
-                response = await asyncio.wait_for(
-                    client.generate_content(prompt, model=model_enum),
-                    timeout=_SEND_TIMEOUT_SEC,
-                )
-            try:
-                persist_cookies(client)
-            except OSError:
-                pass
-            return response.text or ""
-        except Exception as exc:
-            last_exc = exc
-            if attempt == 0 and _is_recoverable_gemini_error(exc):
-                await reset_gemini_client()
-                continue
-            raise
-    if last_exc:
-        raise last_exc
-    return ""
-
-
-def _finish_agent_stream(
-    completion_id: str,
-    model_name: str,
-    full: str,
-) -> list[str]:
+def _finish_agent_stream(completion_id: str, model_name: str, full: str) -> list[str]:
     lines: list[str] = []
     cleaned, tool_calls = parse_tool_calls(full)
     if cleaned:
@@ -263,7 +217,7 @@ async def chat_completions(
     body: ChatCompletionRequest,
     _: None = Depends(verify_api_key),
 ) -> Any:
-    from server import gemini_client, persist_cookies
+    from server import gemini_client
 
     if not gemini_client:
         raise HTTPException(status_code=503, detail="Gemini client not initialized")
@@ -277,60 +231,31 @@ async def chat_completions(
     completion_id = _completion_id()
     agent_mode = bool(body.tools)
 
+    try:
+        text = await generate_text(prompt, model_enum)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     if body.stream:
-        from server import _gemini_call_lock, _is_recoverable_gemini_error, reset_gemini_client
 
         async def sse_stream() -> AsyncIterator[str]:
-            full = ""
             try:
-                async with _gemini_call_lock:
-                    async for chunk in gemini_client.generate_content_stream(
-                        prompt, model=model_enum
-                    ):
-                        delta = getattr(chunk, "text_delta", None) or ""
-                        if delta:
-                            full += delta
-                            if not agent_mode:
-                                yield _chunk(
-                                    completion_id,
-                                    model_name,
-                                    {"role": "assistant", "content": delta},
-                                )
-                try:
-                    persist_cookies(gemini_client)
-                except OSError:
-                    pass
-
                 if agent_mode:
-                    for line in _finish_agent_stream(completion_id, model_name, full):
+                    for line in _finish_agent_stream(completion_id, model_name, text):
                         yield line
-                else:
-                    yield _chunk(completion_id, model_name, {}, finish_reason="stop")
-                    yield "data: [DONE]\n\n"
+                    return
+                first = True
+                for piece in fake_stream_text(text):
+                    delta: dict[str, Any] = {"content": piece}
+                    if first:
+                        delta["role"] = "assistant"
+                        first = False
+                    yield _chunk(completion_id, model_name, delta)
+                yield _chunk(completion_id, model_name, {}, finish_reason="stop")
+                yield "data: [DONE]\n\n"
             except Exception as exc:
-                if _is_recoverable_gemini_error(exc):
-                    try:
-                        await reset_gemini_client()
-                        full = await _generate_content_text(prompt, model_enum)
-                        if agent_mode:
-                            for line in _finish_agent_stream(
-                                completion_id, model_name, full
-                            ):
-                                yield line
-                        else:
-                            if full:
-                                yield _chunk(
-                                    completion_id,
-                                    model_name,
-                                    {"role": "assistant", "content": full},
-                                )
-                            yield _chunk(
-                                completion_id, model_name, {}, finish_reason="stop"
-                            )
-                            yield "data: [DONE]\n\n"
-                        return
-                    except Exception as fallback_exc:
-                        exc = fallback_exc
                 yield _chunk(
                     completion_id,
                     model_name,
@@ -344,13 +269,6 @@ async def chat_completions(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-
-    try:
-        text = await _generate_content_text(prompt, model_enum)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if agent_mode:
         cleaned, tool_calls = parse_tool_calls(text)

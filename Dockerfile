@@ -9,7 +9,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py openai_api.py agent_bridge.py ./
+COPY server.py openai_api.py agent_bridge.py gemini_service.py ./
 COPY public ./public/
 
 ENV GEMINI_HOST=0.0.0.0

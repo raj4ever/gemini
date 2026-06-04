@@ -55,6 +55,9 @@ services:
       GEMINI_COOKIES_PATH: /app/cookies.json
       GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-cookie-local}
       GEMINI_DEFAULT_MODEL: ${GEMINI_DEFAULT_MODEL:-gemini-3-flash}
+      GEMINI_NATIVE_STREAM: "false"
+      GEMINI_MAX_ATTEMPTS: "3"
+      GEMINI_SEND_TIMEOUT: "120"
     networks:
       - hermes-net
     restart: unless-stopped
