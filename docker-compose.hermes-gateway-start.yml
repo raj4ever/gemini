@@ -24,8 +24,14 @@ services:
         fi
         echo "Agent container: $$AGENT"
         docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway status || true
-        docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway start
-        sleep 3
+        docker exec "$$AGENT" sh -ec '
+          mkdir -p /home/hermes/.hermes/bin /home/hermeswebui/.hermes/bin
+          ln -sf /opt/hermes/.venv/bin/hermes /home/hermes/.hermes/bin/hermes
+          ln -sf /opt/hermes/.venv/bin/hermes /home/hermeswebui/.hermes/bin/hermes
+        '
+        docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway restart || \
+          docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway start
+        sleep 5
         docker exec "$$AGENT" hermes -p "$${PROFILE}" gateway status
         docker exec "$$AGENT" hermes status || true
 

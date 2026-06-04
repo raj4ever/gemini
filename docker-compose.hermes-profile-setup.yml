@@ -24,20 +24,32 @@ services:
         DIR="/data/profiles/$${PROFILE}"
         mkdir -p "$${DIR}"
         wget -qO "$${DIR}/config.yaml" "$${CONFIG_URL}"
+        TG_BLOCK=""
+        if [ -n "$${TELEGRAM_BOT_TOKEN}" ]; then
+          TG_BLOCK="TELEGRAM_BOT_TOKEN=$${TELEGRAM_BOT_TOKEN}
+TELEGRAM_ALLOWED_USERS=$${TELEGRAM_ALLOWED_USERS}
+TELEGRAM_HOME_CHANNEL=$${TELEGRAM_HOME_CHANNEL}
+TELEGRAM_HOME_CHANNEL_THREAD_ID=$${TELEGRAM_HOME_CHANNEL_THREAD_ID}
+"
+        fi
         {
           echo "HERMES_API_KEY=$${HERMES_API_KEY}"
-          if [ -n "$${TELEGRAM_BOT_TOKEN}" ]; then
-            echo "TELEGRAM_BOT_TOKEN=$${TELEGRAM_BOT_TOKEN}"
-            echo "TELEGRAM_ALLOWED_USERS=$${TELEGRAM_ALLOWED_USERS}"
-            echo "TELEGRAM_HOME_CHANNEL=$${TELEGRAM_HOME_CHANNEL}"
-            echo "TELEGRAM_HOME_CHANNEL_THREAD_ID=$${TELEGRAM_HOME_CHANNEL_THREAD_ID}"
-          fi
+          printf '%s' "$${TG_BLOCK}"
         } > "$${DIR}/.env"
+        if [ -n "$${TELEGRAM_BOT_TOKEN}" ]; then
+          {
+            echo "HERMES_API_KEY=$${HERMES_API_KEY}"
+            printf '%s' "$${TG_BLOCK}"
+          } > /data/.env
+        fi
+        mkdir -p /data/bin
+        wget -qO /data/bin/hermes https://raw.githubusercontent.com/raj4ever/gemini/main/vps/hermes-bin/hermes
+        chmod 755 /data/bin/hermes
         printf '%s\n' "$${PROFILE}" > /data/active_profile
         chmod 600 "$${DIR}/.env"
         rm -f "$${DIR}/gateway.pid" "$${DIR}/processes.json"
         printf '%s\n' '{"gateway_state":"running","platforms":{}}' > "$${DIR}/gateway_state.json"
-        chown -R 1000:1000 "$${DIR}" /data/active_profile
+        chown -R 1000:1000 "$${DIR}" /data/active_profile /data/bin /data/.env 2>/dev/null || true
         echo "OK: profile $${PROFILE} + gateway_state=running"
 
 volumes:

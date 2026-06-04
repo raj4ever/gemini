@@ -1,0 +1,3 @@
+#!/bin/sh
+# Wrapper on shared Hermes volume — WebUI/terminal tools expect ~/.hermes/bin/hermes
+exec /opt/hermes/.venv/bin/hermes "$@"
