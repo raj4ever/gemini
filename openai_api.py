@@ -47,6 +47,17 @@ MODEL_ALIASES: dict[str, str] = {
 
 DEFAULT_MODEL = os.environ.get("GEMINI_DEFAULT_MODEL", "gemini-3-flash")
 STREAM_KEEPALIVE_SEC = float(os.environ.get("GEMINI_STREAM_KEEPALIVE_SEC", "12"))
+STREAM_ACK = os.environ.get("GEMINI_STREAM_ACK", "Thinking…\n")
+MODELS_MINIMAL = os.environ.get("GEMINI_MODELS_MINIMAL", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+MINIMAL_MODEL_IDS = (
+    "gemini-3-flash",
+    "gemini-3-pro",
+    "gemini-3-flash-thinking",
+)
 
 _bearer = HTTPBearer(auto_error=False)
 router = APIRouter(prefix="/v1")
@@ -187,6 +198,15 @@ def _finish_agent_stream(completion_id: str, model_name: str, full: str) -> list
                 {"role": "assistant", "content": cleaned},
             )
         )
+    elif tool_calls:
+        # Hermes WebUI waits for a content token before tool_calls chunks.
+        lines.append(
+            _chunk(
+                completion_id,
+                model_name,
+                {"role": "assistant", "content": "Running tools…\n"},
+            )
+        )
     if tool_calls:
         lines.extend(build_stream_tool_chunks(completion_id, model_name, tool_calls))
     else:
@@ -199,7 +219,8 @@ def _finish_agent_stream(completion_id: str, model_name: str, full: str) -> list
 async def list_models(_: None = Depends(verify_api_key)) -> dict[str, Any]:
     models = []
     seen: set[str] = set()
-    for name in all_model_names():
+    names = list(MINIMAL_MODEL_IDS) if MODELS_MINIMAL else all_model_names()
+    for name in names:
         if name in seen:
             continue
         seen.add(name)
@@ -236,13 +257,13 @@ async def chat_completions(
     if body.stream:
 
         async def sse_stream() -> AsyncIterator[str]:
-            # Hermes WebUI ignores empty content; send a visible placeholder immediately.
             yield _chunk(
                 completion_id,
                 model_name,
-                {"role": "assistant", "content": " "},
+                {"role": "assistant", "content": STREAM_ACK},
             )
             gen = asyncio.create_task(generate_text(prompt, model_enum))
+            dots = 0
             try:
                 while not gen.done():
                     try:
@@ -251,7 +272,12 @@ async def chat_completions(
                             timeout=STREAM_KEEPALIVE_SEC,
                         )
                     except asyncio.TimeoutError:
-                        yield ": keepalive\n\n"
+                        dots = min(dots + 1, 6)
+                        yield _chunk(
+                            completion_id,
+                            model_name,
+                            {"content": "." * dots},
+                        )
                 text = await gen
             except HTTPException as exc:
                 yield _chunk(

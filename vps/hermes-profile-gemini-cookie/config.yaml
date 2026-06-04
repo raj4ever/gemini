@@ -3,6 +3,7 @@ model:
   provider: custom
   base_url: http://gemini-cookie:8765/v1
   api_key: sk-gemini-cookie-local
+  # WebUI model picker: use gemini-3-flash only (1.5 aliases are slower on VPS)
 providers: {}
 fallback_providers: []
 toolsets:
@@ -14,10 +15,10 @@ agent:
   tool_use_enforcement: auto
 display:
   interface: cli
-  streaming: true
+  streaming: false
   platforms:
     telegram:
-      streaming: true
+      streaming: false
 gateway:
   strict: false
 streaming:
