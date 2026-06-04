@@ -29,6 +29,9 @@ services:
       GEMINI_NATIVE_STREAM: "false"
       GEMINI_MAX_ATTEMPTS: "3"
       GEMINI_SEND_TIMEOUT: "120"
+      GEMINI_STREAM_KEEPALIVE_SEC: "12"
+      GEMINI_AGENT_MAX_TOOLS: "30"
+      GEMINI_AGENT_MAX_MESSAGES: "24"
     networks:
       - default
       - hermes

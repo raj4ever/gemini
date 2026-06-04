@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from typing import Any
+
+AGENT_MAX_TOOLS = int(os.environ.get("GEMINI_AGENT_MAX_TOOLS", "30"))
+AGENT_MAX_MESSAGES = int(os.environ.get("GEMINI_AGENT_MAX_MESSAGES", "24"))
+AGENT_MAX_MSG_CHARS = int(os.environ.get("GEMINI_AGENT_MAX_MSG_CHARS", "12000"))
+AGENT_MAX_TOOL_DESC = int(os.environ.get("GEMINI_AGENT_MAX_TOOL_DESC", "280"))
 
 TOOL_CALL_TAG = "hermes_tool_call"
 TOOL_CALL_BLOCK_PATTERN = re.compile(
@@ -31,7 +37,15 @@ When you need to run commands, read/write files, search, or use any capability b
 """
 
 
-def _compact_tools_for_prompt(tools: list[dict[str, Any]], max_tools: int = 80) -> str:
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 20] + "\n…[truncated]"
+
+
+def _compact_tools_for_prompt(
+    tools: list[dict[str, Any]], max_tools: int = AGENT_MAX_TOOLS
+) -> str:
     """Serialize tool definitions for the prompt (cap count to avoid huge prompts)."""
     compact: list[dict[str, Any]] = []
     for t in tools[:max_tools]:
@@ -40,7 +54,7 @@ def _compact_tools_for_prompt(tools: list[dict[str, Any]], max_tools: int = 80) 
             continue
         entry: dict[str, Any] = {
             "name": fn.get("name", ""),
-            "description": (fn.get("description") or "")[:500],
+            "description": (fn.get("description") or "")[:AGENT_MAX_TOOL_DESC],
         }
         params = fn.get("parameters")
         if params:
@@ -89,12 +103,31 @@ def extract_message_text(content: str | list[Any] | None) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _trim_messages_for_agent(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep recent turns only — long Hermes sessions hang VPS Gemini."""
+    if len(messages) <= AGENT_MAX_MESSAGES:
+        trimmed = messages
+    else:
+        head = [m for m in messages if m.get("role") == "system"][:2]
+        tail = messages[-AGENT_MAX_MESSAGES:]
+        trimmed = head + [m for m in tail if m not in head]
+    out: list[dict[str, Any]] = []
+    for msg in trimmed:
+        m = dict(msg)
+        content = m.get("content")
+        if isinstance(content, str) and len(content) > AGENT_MAX_MSG_CHARS:
+            m["content"] = _truncate(content, AGENT_MAX_MSG_CHARS)
+        out.append(m)
+    return out
+
+
 def messages_to_agent_prompt(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     tool_choice: Any = None,
 ) -> str:
     """Build a single prompt including tools, history, and tool results."""
+    messages = _trim_messages_for_agent(messages)
     parts: list[str] = []
 
     if tools:

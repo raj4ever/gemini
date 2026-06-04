@@ -36,8 +36,21 @@ def is_recoverable_error(exc: BaseException) -> bool:
         or "temporarily blocked" in msg
         or "closed" in msg
         or "1013" in msg
-        or "unauthenticated" in msg
+        or "stream suspended" in msg
+        or "no cid found" in msg
     )
+
+
+def timeout_for_prompt(prompt: str) -> float:
+    """Longer waits for Hermes agent prompts (tools + history)."""
+    n = len(prompt)
+    if n > 80_000:
+        return max(SEND_TIMEOUT_SEC, 240.0)
+    if n > 40_000:
+        return max(SEND_TIMEOUT_SEC, 180.0)
+    if n > 20_000:
+        return max(SEND_TIMEOUT_SEC, 150.0)
+    return SEND_TIMEOUT_SEC
 
 
 def fake_stream_text(text: str, chunk_size: int = FAKE_STREAM_CHUNK) -> list[str]:
@@ -70,7 +83,7 @@ async def generate_text(prompt: str, model: Model | Any = Model.UNSPECIFIED) -> 
                 else:
                     response = await asyncio.wait_for(
                         client.generate_content(prompt, model=model),
-                        timeout=SEND_TIMEOUT_SEC,
+                        timeout=timeout_for_prompt(prompt),
                     )
                     text = response.text or ""
             try:

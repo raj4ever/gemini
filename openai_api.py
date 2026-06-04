@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -45,6 +46,7 @@ MODEL_ALIASES: dict[str, str] = {
 }
 
 DEFAULT_MODEL = os.environ.get("GEMINI_DEFAULT_MODEL", "gemini-3-flash")
+STREAM_KEEPALIVE_SEC = float(os.environ.get("GEMINI_STREAM_KEEPALIVE_SEC", "12"))
 
 _bearer = HTTPBearer(auto_error=False)
 router = APIRouter(prefix="/v1")
@@ -231,22 +233,51 @@ async def chat_completions(
     completion_id = _completion_id()
     agent_mode = bool(body.tools)
 
-    try:
-        text = await generate_text(prompt, model_enum)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
     if body.stream:
 
         async def sse_stream() -> AsyncIterator[str]:
+            # Hermes WebUI waits for the first SSE chunk — emit immediately, then call Gemini.
+            yield _chunk(
+                completion_id,
+                model_name,
+                {"role": "assistant", "content": ""},
+            )
+            gen = asyncio.create_task(generate_text(prompt, model_enum))
+            try:
+                while not gen.done():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(gen),
+                            timeout=STREAM_KEEPALIVE_SEC,
+                        )
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                text = await gen
+            except HTTPException as exc:
+                yield _chunk(
+                    completion_id,
+                    model_name,
+                    {"role": "assistant", "content": f"\n[Error: {exc.detail}]"},
+                )
+                yield _chunk(completion_id, model_name, {}, finish_reason="stop")
+                yield "data: [DONE]\n\n"
+                return
+            except Exception as exc:
+                yield _chunk(
+                    completion_id,
+                    model_name,
+                    {"role": "assistant", "content": f"\n[Error: {exc}]"},
+                )
+                yield _chunk(completion_id, model_name, {}, finish_reason="stop")
+                yield "data: [DONE]\n\n"
+                return
+
             try:
                 if agent_mode:
                     for line in _finish_agent_stream(completion_id, model_name, text):
                         yield line
                     return
-                first = True
+                first = False
                 for piece in fake_stream_text(text):
                     delta: dict[str, Any] = {"content": piece}
                     if first:
@@ -269,6 +300,13 @@ async def chat_completions(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    try:
+        text = await generate_text(prompt, model_enum)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if agent_mode:
         cleaned, tool_calls = parse_tool_calls(text)
